@@ -9,10 +9,19 @@ export default function ChatWindow({ channel, me, dmUser }) {
 
   // Charger les messages
   useEffect(() => {
-    fetch(`http://localhost:4000/messages/${channel}`)
-      .then((res) => res.json())
-      .then((data) => setMessages(Array.isArray(data) ? data : []))
-      .catch(() => setMessages([]));
+    const loadMessages = () => {
+      fetch(`http://localhost:4000/messages/${channel}`)
+        .then((res) => res.json())
+        .then((data) => setMessages(Array.isArray(data) ? data : []))
+        .catch(() => setMessages([]));
+    };
+
+    loadMessages();
+    
+    // Polling pour les nouveaux messages (utile pour les réponses de Vision)
+    const interval = setInterval(loadMessages, 2000);
+    
+    return () => clearInterval(interval);
   }, [channel]);
 
   // Scroll automatique 
@@ -82,7 +91,7 @@ export default function ChatWindow({ channel, me, dmUser }) {
       author: me.firstName,
       content: text || "",
       fileUrl,
-      recipient: dmUser ? `${dmUser.firstName} ${dmUser.lastName}` : null,
+      recipient: dmUser ? (dmUser.firstName === "Vision" ? "Vision" : `${dmUser.firstName} ${dmUser.lastName}`) : null,
     };
 
     fetch(`http://localhost:4000/messages/${channel}`, {
@@ -130,13 +139,23 @@ export default function ChatWindow({ channel, me, dmUser }) {
         {messages.length === 0 && (
           <div className="empty">Commence la conversation 🚀</div>
         )}
-        {messages.map((m) => (
-          <Message
-            key={m.id}
-            data={{ ...m, text: m.content }}
-            mine={m.author === me.firstName}
-          />
-        ))}
+        {messages.map((m) => {
+          let sources = null;
+          if (m.sources) {
+            try {
+              sources = JSON.parse(m.sources);
+            } catch (e) {
+              sources = null;
+            }
+          }
+          return (
+            <Message
+              key={m.id}
+              data={{ ...m, text: m.content, sources }}
+              mine={m.author === me.firstName}
+            />
+          );
+        })}
         <canvas className="confetti-layer" ref={confettiRef} />
       </div>
 

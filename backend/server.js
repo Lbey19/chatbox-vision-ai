@@ -43,9 +43,17 @@ db.serialize(() => {
       content TEXT,
       fileUrl TEXT,
       recipient TEXT,
+      sources TEXT,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  
+  // Ajouter la colonne sources si elle n'existe pas déjà
+  db.run(`ALTER TABLE messages ADD COLUMN sources TEXT`, (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.error("Erreur lors de l'ajout de la colonne sources:", err.message);
+    }
+  });
 
   db.run(`
     CREATE TABLE IF NOT EXISTS alerts (
@@ -65,6 +73,19 @@ db.serialize(() => {
       UNIQUE(firstName, lastName)
     )
   `);
+  
+  // Ajouter l'utilisateur Vision automatiquement
+  db.run(
+    "INSERT OR IGNORE INTO users (firstName, lastName) VALUES (?, ?)",
+    ["Vision", "AI"],
+    function (err) {
+      if (err && !err.message.includes("UNIQUE")) {
+        console.error("Erreur lors de l'ajout de Vision:", err.message);
+      } else if (this.changes > 0) {
+        console.log("✅ Utilisateur Vision ajouté à la base de données");
+      }
+    }
+  );
 });
 
 // upload
@@ -86,23 +107,64 @@ app.get("/messages/:channel", (req, res) => {
   );
 });
 
-app.post("/messages/:channel", (req, res) => {
-  const { author, content, fileUrl, recipient } = req.body;
+app.post("/messages/:channel", async (req, res) => {
+  const { author, content, fileUrl, recipient, sources } = req.body;
+  
+  // Insérer le message original
   db.run(
-    `INSERT INTO messages (channel, author, content, fileUrl, recipient)
-     VALUES (?, ?, ?, ?, ?)`,
-    [req.params.channel, author || "Anonymous", content || "", fileUrl || null, recipient || null],
-    function (err) {
+    `INSERT INTO messages (channel, author, content, fileUrl, recipient, sources)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [req.params.channel, author || "Anonymous", content || "", fileUrl || null, recipient || null, sources ? JSON.stringify(sources) : null],
+    async function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({
+      
+      const originalMessage = {
         id: this.lastID,
         channel: req.params.channel,
         author: author || "Anonymous",
         content: content || "",
         fileUrl: fileUrl || null,
         recipient: recipient || null,
+        sources: sources || null,
         timestamp: new Date().toISOString(),
-      });
+      };
+      
+      res.json(originalMessage);
+      
+      // Si le message est destiné à Vision, envoyer une requête à l'API
+      if (recipient && recipient.toLowerCase() === "vision") {
+        try {
+          const response = await fetch("http://127.0.0.1:3001/api/chat", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ message: content || "" }),
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            const visionReply = data.reply || "Aucune réponse de l'API";
+            const visionSources = data.sources || [];
+            
+            // Insérer la réponse de Vision avec les sources
+            db.run(
+              `INSERT INTO messages (channel, author, content, fileUrl, recipient, sources)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [req.params.channel, "Vision", visionReply, null, author, JSON.stringify(visionSources)],
+              function (err) {
+                if (err) {
+                  console.error("Erreur lors de l'insertion de la réponse Vision:", err.message);
+                }
+              }
+            );
+          } else {
+            console.error("Erreur API Vision:", response.statusText);
+          }
+        } catch (error) {
+          console.error("Erreur lors de la requête à l'API Vision:", error.message);
+        }
+      }
     }
   );
 });
